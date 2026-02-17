@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Trophy, AlertCircle, CheckCircle, Flame, BarChart3, RefreshCw, Wallet, Calendar } from 'lucide-react';
+import { Trophy, AlertCircle, CheckCircle, Flame, BarChart3, Wallet, Calendar, Save, RefreshCw } from 'lucide-react';
+import { supabase } from './supabaseClient';
 
 const App = () => {
   // Configuración inicial de las metas según el prompt
@@ -61,25 +62,96 @@ const App = () => {
     }
   ];
 
-  const [participants, setParticipants] = useState(() => {
-    const saved = localStorage.getItem('metas-semanales-semana6');
-    // Simple check to merge new users if they don't exist in saved data
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // If we added a new user (Danner) and he is not in the saved data, we reset or merge.
-      // For simplicity in this context, if lengths differ significantly, we reset to show Danner.
-      // In a real app we would merge carefully.
-      if (parsed.length < initialData.length) {
-         return initialData; 
-      }
-      return parsed;
-    }
-    return initialData;
-  });
+  const [participants, setParticipants] = useState(initialData);
+  const [loading, setLoading] = useState(true);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
 
+  // Cargar datos desde Supabase SOLO al iniciar (una vez)
   useEffect(() => {
-    localStorage.setItem('metas-semanales-semana6', JSON.stringify(participants));
-  }, [participants]);
+    loadData();
+  }, []);
+
+  // Función para cargar datos desde Supabase
+  const loadData = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('goals')
+        .select('*')
+        .order('id', { ascending: true });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        setParticipants(data);
+      } else {
+        // Si no hay datos, insertar los datos iniciales
+        await initializeData();
+      }
+    } catch (error) {
+      console.error('Error cargando datos:', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Función MANUAL para guardar datos en Supabase (se llama con botón)
+  const saveData = async () => {
+    setSaving(true);
+    try {
+      console.log('💾 Guardando cambios en Supabase...');
+      
+      // Hacer un UPSERT para cada participante
+      // UPSERT = INSERT si no existe, UPDATE si ya existe (como SQL MERGE)
+      for (const participant of participants) {
+        const { error } = await supabase
+          .from('goals')
+          .upsert(participant, { onConflict: 'id' });
+
+        if (error) throw error;
+      }
+      
+      setHasUnsavedChanges(false);
+      setLastSaved(new Date());
+      console.log('✅ Cambios guardados exitosamente');
+      alert('✅ ¡Cambios guardados correctamente!');
+    } catch (error) {
+      console.error('❌ Error guardando datos:', error.message);
+      alert('❌ Error al guardar: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Función MANUAL para recargar datos desde Supabase
+  const reloadData = async () => {
+    if (hasUnsavedChanges) {
+      const confirmReload = window.confirm(
+        '⚠️ Tienes cambios sin guardar. ¿Estás seguro de recargar? Se perderán los cambios.'
+      );
+      if (!confirmReload) return;
+    }
+    
+    setLoading(true);
+    await loadData();
+    setHasUnsavedChanges(false);
+    console.log('🔄 Datos recargados desde Supabase');
+  };
+
+  // Función para inicializar datos por primera vez
+  const initializeData = async () => {
+    try {
+      const { error } = await supabase
+        .from('goals')
+        .insert(initialData);
+
+      if (error) throw error;
+      setParticipants(initialData);
+    } catch (error) {
+      console.error('Error inicializando datos:', error.message);
+    }
+  };
 
   // Función para calcular la multa basada en la tabla proporcionada
   const calculateFine = (percentage) => {
@@ -120,13 +192,12 @@ const App = () => {
       
       return { ...user, goals: updatedGoals };
     }));
+    
+    // Marcar que hay cambios sin guardar
+    setHasUnsavedChanges(true);
   };
 
-  const resetData = () => {
-    if(window.confirm("¿Estás seguro de reiniciar todo el progreso de la semana?")) {
-      setParticipants(initialData);
-    }
-  };
+
 
   // Renderizar la barra de progreso individual por meta
   const RenderGoalTracker = ({ user, goal }) => {
@@ -189,12 +260,54 @@ const App = () => {
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 leading-none">Prime Season</h1>
-              <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">Semana 6 • Martes inicio</p>
+              <p className="text-xs text-slate-500 font-medium mt-1 uppercase tracking-wider">
+                Semana 6 • Guarda tus cambios manualmente
+              </p>
             </div>
           </div>
-          <button onClick={resetData} className="text-slate-400 hover:text-red-500 transition-colors p-2" title="Reiniciar Semana">
-            <RefreshCw size={18} />
-          </button>
+          
+          <div className="flex items-center gap-3">
+            {/* Indicador de cambios sin guardar */}
+            {hasUnsavedChanges && (
+              <div className="flex items-center gap-1 px-3 py-1 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></div>
+                <span className="text-xs text-amber-700 font-medium">Cambios sin guardar</span>
+              </div>
+            )}
+            
+            {/* Última vez guardado */}
+            {lastSaved && !hasUnsavedChanges && (
+              <span className="text-xs text-slate-400">
+                Guardado: {lastSaved.toLocaleTimeString('es-ES')}
+              </span>
+            )}
+            
+            {/* Botón de recargar */}
+            <button
+              onClick={reloadData}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Recargar datos desde Supabase"
+            >
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+              <span className="text-sm font-medium">Recargar</span>
+            </button>
+            
+            {/* Botón de guardar */}
+            <button
+              onClick={saveData}
+              disabled={saving || !hasUnsavedChanges}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors font-medium text-sm ${
+                hasUnsavedChanges
+                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+              } disabled:opacity-50`}
+              title={hasUnsavedChanges ? 'Guardar cambios en Supabase' : 'No hay cambios para guardar'}
+            >
+              <Save size={16} />
+              <span>{saving ? 'Guardando...' : 'Guardar'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
